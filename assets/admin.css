@@ -1,0 +1,11 @@
+.bqlv-wrap{max-width:1400px}
+.bqlv-cards{display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:16px;margin:20px 0}
+.bqlv-card,.bqlv-panel{background:#fff;border:1px solid #dcdcde;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.bqlv-card{padding:18px 20px}.bqlv-card strong{display:block;font-size:30px;line-height:1.1}.bqlv-card span{display:block;margin-top:5px;color:#646970}
+.bqlv-panel{margin:18px 0;padding:18px}.bqlv-panel-head{display:flex;justify-content:space-between;align-items:center;gap:20px}.bqlv-panel-head h2{margin:0 0 12px}
+.bqlv-table-wrap{overflow:auto}.bqlv-ref{max-width:280px;word-break:break-word}
+.bqlv-settings .bqlv-setting-row{display:flex;justify-content:space-between;gap:24px;align-items:center;border-top:1px solid #eee;padding:16px 0}
+.bqlv-settings .bqlv-setting-row:first-of-type{border-top:0}.bqlv-settings p{margin:5px 0;color:#646970}.bqlv-ip-item{display:flex;gap:12px;align-items:center;margin:6px 0}
+.bqlv-grid{display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:16px;margin:16px 0}.bqlv-grid label{display:flex;flex-direction:column;gap:6px;font-weight:600}
+.bqlv-grid input{max-width:180px}#bqlv-settings-msg{margin-left:10px}
+@media(max-width:900px){.bqlv-cards,.bqlv-grid{grid-template-columns:1fr}.bqlv-settings .bqlv-setting-row{align-items:flex-start;flex-direction:column}}
