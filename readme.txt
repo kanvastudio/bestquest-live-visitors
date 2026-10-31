@@ -2,7 +2,7 @@
 Tags: live visitors, visitor tracking, analytics, real time, visitor history
 Requires at least: 6.5
 Requires PHP: 8.0
-Stable tag: 1.3.3
+Stable tag: 1.3.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -23,6 +23,8 @@ BestQuest Live Visitors provides a lightweight WordPress admin dashboard showing
 No external analytics service or API key is required. The tracker stores data in the site's own WordPress database. Session duration is elapsed first-to-last recorded heartbeat, not verified time spent reading. An inactive session is not proof that a user disconnected. Cookie blocking, ad blockers, browser privacy features, and bots can affect counts.
 
 Developed by BestQuest: https://bestquest.net/
+
+IMPORTANT — GitHub distribution: The plugin adds a small public footer attribution, “Visitor insights powered by BestQuest”, linking to https://bestquest.net/ automatically on installation. The website owner can disable it at any time in Live Visitors > Settings. No requests to BestQuest are made by this credit. This default-on public link makes the GitHub edition unsuitable for submission to the official WordPress.org Plugin Directory without modification.
 
 == Installation ==
 
@@ -60,7 +62,7 @@ The default retention is 7 days; the dashboard allows changing this between 1 an
 
 == Changelog ==
 
-= 1.3.3 =
+= 1.3.4 =
 * Packaging and documentation release: GPL license text, WordPress.org readme, privacy policy guidance, and security notes.
 * No intentional visitor-tracking behavior changes from 1.3.2.
 
@@ -84,5 +86,5 @@ The default retention is 7 days; the dashboard allows changing this between 1 an
 
 == Upgrade Notice ==
 
-= 1.3.3 =
+= 1.3.4 =
 Adds full licensing and WordPress.org-style documentation; existing session data and settings are preserved.

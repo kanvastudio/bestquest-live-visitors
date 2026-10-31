@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BestQuest Live Visitors
  * Description: Lightweight anonymous real-time visitor dashboard for WordPress.
- * Version: 1.3.3
+ * Version: 1.3.4
  * Plugin URI: https://bestquest.net/
  * Author: BestQuest
  * Author URI: https://bestquest.net/
@@ -22,12 +22,13 @@
 if (!defined('ABSPATH')) exit;
 
 final class BQLV_Plugin {
-    const VERSION = '1.3.3';
+    const VERSION = '1.3.4';
     const NS = 'bestquest-live/v1';
     const OPT_IPS = 'bqlv_ignored_ip_hashes';
     const OPT_HEARTBEAT = 'bqlv_heartbeat_seconds';
     const OPT_LIVE = 'bqlv_live_window_seconds';
     const OPT_RETENTION = 'bqlv_retention_days';
+    const OPT_PUBLIC_CREDIT = 'bqlv_public_credit';
 
     private static $instance;
 
@@ -41,6 +42,7 @@ final class BQLV_Plugin {
         register_deactivation_hook(__FILE__, [$this, 'deactivate']);
         add_action('rest_api_init', [$this, 'register_routes']);
         add_action('wp_enqueue_scripts', [$this, 'enqueue_frontend']);
+        add_action('wp_footer', [$this, 'render_public_credit'], 100);
         add_action('admin_menu', [$this, 'admin_menu']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_admin']);
         add_action('wp_ajax_bqlv_live_data', [$this, 'ajax_live_data']);
@@ -102,6 +104,7 @@ final class BQLV_Plugin {
         add_option(self::OPT_LIVE, 60);
         add_option(self::OPT_RETENTION, 7);
         add_option(self::OPT_IPS, []);
+        add_option(self::OPT_PUBLIC_CREDIT, 1);
         if (!wp_next_scheduled('bqlv_cleanup_event')) {
             wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'bqlv_cleanup_event');
         }
@@ -264,6 +267,19 @@ final class BQLV_Plugin {
         return new WP_REST_Response(['tracked' => true], 200);
     }
 
+    /**
+     * GitHub edition: disclosed default-on public publisher credit.
+     * Administrators can disable the credit from Live Visitors > Settings.
+     * No tracking pixels, remote images, or network requests are involved.
+     * Publisher: https://bestquest.net/
+     */
+    public function render_public_credit() {
+        if (is_admin() || is_feed() || is_embed() || wp_doing_ajax() || !get_option(self::OPT_PUBLIC_CREDIT, 1)) return;
+        echo '<div class="bqlv-publisher-credit" style="clear:both;text-align:center;font-size:12px;line-height:1.6;padding:8px 12px;color:inherit;opacity:.72">';
+        echo 'Visitor insights powered by <a href="' . esc_url('https://bestquest.net/') . '" rel="nofollow" style="color:inherit;text-decoration:underline">BestQuest</a>';
+        echo '</div>';
+    }
+
     public function admin_menu() {
         add_menu_page('Live Visitors', 'Live Visitors', 'manage_options', 'bqlv-live-visitors', [$this, 'render_admin'], 'dashicons-visibility', 3);
     }
@@ -283,6 +299,7 @@ final class BQLV_Plugin {
         $heartbeat = (int)get_option(self::OPT_HEARTBEAT, 20);
         $live = (int)get_option(self::OPT_LIVE, 60);
         $retention = (int)get_option(self::OPT_RETENTION, 7);
+        $public_credit = (bool)get_option(self::OPT_PUBLIC_CREDIT, 1);
         $hashes = get_option(self::OPT_IPS, []);
         $hashes = is_array($hashes) ? $hashes : [];
         $ignored = in_array($this->ip_hash($this->client_ip()), $hashes, true);
@@ -348,6 +365,8 @@ final class BQLV_Plugin {
                     <label>Consider visitor live for (seconds)<input type="number" id="bqlv-live-window" min="30" max="300" value="<?php echo esc_attr($live); ?>"></label>
                     <label>Retain session data (days)<input type="number" id="bqlv-retention" min="1" max="30" value="<?php echo esc_attr($retention); ?>"></label>
                 </div>
+                <p><label><input type="checkbox" id="bqlv-public-credit" <?php checked($public_credit); ?>> Show public footer credit linking to BestQuest</label></p>
+                <p class="description">GitHub edition: enabled by default. Displays “Visitor insights powered by BestQuest” on public pages. Uncheck and save to remove it. The credit makes no external requests.</p>
                 <p>
                     <button class="button button-primary" id="bqlv-save-settings">Save settings</button>
                     <button class="button" id="bqlv-cleanup-now">Clean expired data now</button>
@@ -498,9 +517,11 @@ final class BQLV_Plugin {
         $h = max(10, min(120, absint($_POST['heartbeat'] ?? 20)));
         $l = max(30, min(300, absint($_POST['live_window'] ?? 60)));
         $r = max(1, min(30, absint($_POST['retention'] ?? 7)));
+        $credit = isset($_POST['public_credit']) && (string)$_POST['public_credit'] === '1' ? 1 : 0;
         update_option(self::OPT_HEARTBEAT, $h, false);
         update_option(self::OPT_LIVE, $l, false);
         update_option(self::OPT_RETENTION, $r, false);
+        update_option(self::OPT_PUBLIC_CREDIT, $credit, false);
         wp_send_json_success(['message' => 'Settings saved.']);
     }
 

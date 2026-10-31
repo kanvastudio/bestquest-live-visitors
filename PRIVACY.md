@@ -25,3 +25,7 @@ Deactivation cancels the cleanup schedule, but leaves database tables and settin
 The browser and timezone are inferred or reported by the visitor's software and can be incorrect; bot filtering is heuristic. `Last seen` reflects the last successful heartbeat and cannot confirm a network disconnect. Recorded session span is not engaged time.
 
 Information about the developer: https://bestquest.net/
+
+## Public attribution
+
+The GitHub edition displays a footer link to https://bestquest.net/ on public pages by default. Administrators can disable the credit in Live Visitors settings. The link itself does not collect data, request remote resources, or transmit visitor information to BestQuest. Clicking it navigates to BestQuest like any other hyperlink.

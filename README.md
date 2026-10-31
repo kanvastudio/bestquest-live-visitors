@@ -4,7 +4,11 @@ A self-hosted WordPress live visitor dashboard with recent session history.
 
 **Website:** https://bestquest.net/  
 **License:** GPL-2.0-or-later (see `LICENSE`)  
-**Current package:** 1.3.3
+**Current package:** 1.3.4
+
+## Public BestQuest credit (GitHub edition)
+
+**On installation, the plugin displays a small footer credit on public pages:** “Visitor insights powered by BestQuest” linking to https://bestquest.net/. This is **enabled by default**, and site administrators can switch it off under **Live Visitors → Settings → Show public footer credit linking to BestQuest**. It never sends a tracking request to BestQuest. The link uses `rel="nofollow"` and is not intended as an SEO endorsement. This default-on link is not suitable for WordPress.org plugin directory submission; a separate version with default-off credit would be required.
 
 ## Features
 

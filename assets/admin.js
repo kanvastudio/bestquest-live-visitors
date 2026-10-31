@@ -101,7 +101,8 @@
     const r = await post('bqlv_save_settings', {
       heartbeat:$('#bqlv-heartbeat').value,
       live_window:$('#bqlv-live-window').value,
-      retention:$('#bqlv-retention').value
+      retention:$('#bqlv-retention').value,
+      public_credit:$('#bqlv-public-credit').checked ? '1' : '0'
     });
     msg.textContent = r.success ? ' Saved.' : ' Could not save.';
   });
