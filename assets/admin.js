@@ -22,7 +22,7 @@
     const tb = $('#bqlv-live-body');
 
     if (!data.rows.length) {
-      tb.innerHTML = '<tr><td colspan="7">No live visitors right now.</td></tr>';
+      tb.innerHTML = '<tr><td colspan="8">No live visitors right now.</td></tr>';
       return;
     }
 
@@ -35,7 +35,7 @@
         <td><strong>${esc(row.title || row.path)}</strong><br><code>${esc(row.path)}</code></td>
         <td class="bqlv-ref">${ref}</td>
         <td>${esc(row.browser)} / ${esc(row.device)}</td>
-        <td>${esc(row.timezone || '—')}</td>
+        <td><code>${esc(row.ip_address || '—')}</code></td><td>${esc(row.timezone || '—')}</td>
         <td>${esc(row.on_site)}</td>
         <td>${esc(row.last_active)}</td>
         <td><details><summary>${row.journey.length} page${row.journey.length===1?'':'s'}</summary>${journey}</details></td>
@@ -63,9 +63,9 @@
         const ref = row.referrer === 'Internal' ? 'Internal' :
           (row.referrer ? esc(row.referrer) : 'Direct / unknown');
         return `<tr><td><strong>${esc(row.title || row.path)}</strong><br><code>${esc(row.path)}</code></td>
-          <td>${ref}</td><td>${esc(row.browser)} / ${esc(row.device)}</td>
+          <td><code>${esc(row.ip_address || '—')}</code></td><td>${ref}</td><td>${esc(row.browser)} / ${esc(row.device)}</td>
           <td>${esc(row.timezone || '—')}</td><td>${esc(row.first_seen)}</td>
-          <td>${esc(row.last_seen)}</td><td>${esc(row.recorded_span)}</td>
+          <td>${esc(row.recorded_span)}</td>
           <td><details><summary>${(row.journey || []).length} pages</summary>${journey}</details></td></tr>`;
       }).join('') : '<tr><td colspan="8">No ended or inactive sessions within the retention period.</td></tr>';
       $('#bqlv-recent-updated').textContent = 'Updated ' + r.data.updated;
