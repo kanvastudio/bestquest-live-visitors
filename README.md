@@ -1,10 +1,10 @@
 # BestQuest Live Visitors
 
-A self-hosted WordPress live visitor dashboard with recent session history.
+A self-hosted WordPress live visitor dashboard with recent session history and short-retention IP visibility for administrators.
 
 **Website:** https://bestquest.net/  
 **License:** GPL-2.0-or-later (see `LICENSE`)  
-**Current package:** 1.3.4
+**Current package:** 1.4.0
 
 ## Public BestQuest credit (GitHub edition)
 

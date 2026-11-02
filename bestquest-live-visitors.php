@@ -2,7 +2,7 @@
 /**
  * Plugin Name: BestQuest Live Visitors
  * Description: Lightweight anonymous real-time visitor dashboard for WordPress.
- * Version: 1.3.4
+ * Version: 1.4.0
  * Plugin URI: https://bestquest.net/
  * Author: BestQuest
  * Author URI: https://bestquest.net/
@@ -22,7 +22,9 @@
 if (!defined('ABSPATH')) exit;
 
 final class BQLV_Plugin {
-    const VERSION = '1.3.4';
+    const VERSION = '1.4.0';
+    const DB_VERSION = '1.4.0';
+    const OPT_DB_VERSION = 'bqlv_db_version';
     const NS = 'bestquest-live/v1';
     const OPT_IPS = 'bqlv_ignored_ip_hashes';
     const OPT_HEARTBEAT = 'bqlv_heartbeat_seconds';
@@ -40,6 +42,7 @@ final class BQLV_Plugin {
     private function __construct() {
         register_activation_hook(__FILE__, [$this, 'activate']);
         register_deactivation_hook(__FILE__, [$this, 'deactivate']);
+        add_action('plugins_loaded', [$this, 'maybe_upgrade_schema']);
         add_action('rest_api_init', [$this, 'register_routes']);
         add_action('wp_enqueue_scripts', [$this, 'enqueue_frontend']);
         add_action('wp_footer', [$this, 'render_public_credit'], 100);
@@ -83,6 +86,7 @@ final class BQLV_Plugin {
             browser varchar(64) NOT NULL DEFAULT '',
             device varchar(64) NOT NULL DEFAULT '',
             timezone varchar(128) NOT NULL DEFAULT '',
+            ip_address varchar(45) NOT NULL DEFAULT '',
             PRIMARY KEY (id),
             UNIQUE KEY session_hash (session_hash),
             KEY last_seen (last_seen),
@@ -105,9 +109,51 @@ final class BQLV_Plugin {
         add_option(self::OPT_RETENTION, 7);
         add_option(self::OPT_IPS, []);
         add_option(self::OPT_PUBLIC_CREDIT, 1);
+        update_option(self::OPT_DB_VERSION, self::DB_VERSION, false);
         if (!wp_next_scheduled('bqlv_cleanup_event')) {
             wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'bqlv_cleanup_event');
         }
+    }
+
+    public function maybe_upgrade_schema() {
+        if (get_option(self::OPT_DB_VERSION, '') === self::DB_VERSION) return;
+        global $wpdb;
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        $charset = $wpdb->get_charset_collate();
+        $s = $this->sessions_table();
+        $e = $this->events_table();
+
+        dbDelta("CREATE TABLE $s (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            session_hash char(64) NOT NULL,
+            visitor_hash char(64) NOT NULL,
+            current_path varchar(1024) NOT NULL DEFAULT '',
+            page_title varchar(255) NOT NULL DEFAULT '',
+            referrer varchar(1024) NOT NULL DEFAULT '',
+            first_seen datetime NOT NULL,
+            last_seen datetime NOT NULL,
+            browser varchar(64) NOT NULL DEFAULT '',
+            device varchar(64) NOT NULL DEFAULT '',
+            timezone varchar(128) NOT NULL DEFAULT '',
+            ip_address varchar(45) NOT NULL DEFAULT '',
+            PRIMARY KEY (id),
+            UNIQUE KEY session_hash (session_hash),
+            KEY last_seen (last_seen),
+            KEY visitor_hash (visitor_hash)
+        ) $charset;");
+
+        dbDelta("CREATE TABLE $e (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            session_hash char(64) NOT NULL,
+            path varchar(1024) NOT NULL DEFAULT '',
+            page_title varchar(255) NOT NULL DEFAULT '',
+            seen_at datetime NOT NULL,
+            PRIMARY KEY (id),
+            KEY session_hash (session_hash),
+            KEY seen_at (seen_at)
+        ) $charset;");
+
+        update_option(self::OPT_DB_VERSION, self::DB_VERSION, false);
     }
 
     public function deactivate() {
@@ -139,7 +185,7 @@ final class BQLV_Plugin {
     }
 
     public function enqueue_frontend() {
-        if (is_admin() || !$this->should_track()) return;
+        if (is_admin() || is_404() || !$this->should_track()) return;
         wp_enqueue_script('bqlv-live', plugins_url('assets/live.js', __FILE__), [], self::VERSION, true);
         wp_localize_script('bqlv-live', 'BQLV', [
             'endpoint' => esc_url_raw(rest_url(self::NS . '/heartbeat')),
@@ -199,7 +245,7 @@ final class BQLV_Plugin {
     public function heartbeat(WP_REST_Request $request) {
         if (!$this->should_track()) return new WP_REST_Response(['tracked' => false], 200);
 
-        // Per-IP burst cap: limits automated database writes without retaining raw IPs.
+        // Per-IP burst cap: limits automated database writes. Session IPs are retained only for the configured retention period.
         $remote = $this->client_ip();
         if ($remote) {
             $bucket = 'bqlv_rl_' . substr($this->ip_hash($remote), 0, 32);
@@ -225,6 +271,7 @@ final class BQLV_Plugin {
         $tz = mb_substr(sanitize_text_field($p['timezone'] ?? ''), 0, 128);
         $ua = isset($_SERVER['HTTP_USER_AGENT']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT'])) : '';
         $now = current_time('mysql', true);
+        $ip = $this->client_ip();
 
         global $wpdb;
         $s = $this->sessions_table();
@@ -243,6 +290,7 @@ final class BQLV_Plugin {
                 'browser' => $this->browser($ua),
                 'device' => $this->device($ua),
                 'timezone' => $tz,
+                'ip_address' => $ip,
             ], ['id' => (int)$row->id]);
 
             if ((string)$row->current_path !== $path) {
@@ -260,6 +308,7 @@ final class BQLV_Plugin {
                 'browser' => $this->browser($ua),
                 'device' => $this->device($ua),
                 'timezone' => $tz,
+                'ip_address' => $ip,
             ]);
             $wpdb->insert($e, ['session_hash' => $sh, 'path' => $path, 'page_title' => $title, 'seen_at' => $now]);
         }
@@ -306,7 +355,7 @@ final class BQLV_Plugin {
         ?>
         <div class="wrap bqlv-wrap">
             <h1>BestQuest Live Visitors</h1>
-            <p class="description">Anonymous real-time activity. Raw IP addresses are never stored.</p>
+            <p class="description">Real-time activity for site administration. Visitor IP addresses are stored locally for the configured retention period and are visible only to administrators.</p>
 
             <div class="bqlv-cards">
                 <div class="bqlv-card"><strong id="bqlv-live-count">—</strong><span>Live now</span></div>
@@ -320,9 +369,9 @@ final class BQLV_Plugin {
                     <table class="widefat striped">
                         <thead><tr>
                             <th>Current page</th><th>Referrer</th><th>Browser / device</th>
-                            <th>Timezone</th><th>Since first seen</th><th>Last heartbeat</th><th>Session path</th>
+                            <th>IP address</th><th>Timezone</th><th>Since first seen</th><th>Last heartbeat</th><th>Session path</th>
                         </tr></thead>
-                        <tbody id="bqlv-live-body"><tr><td colspan="7">Loading…</td></tr></tbody>
+                        <tbody id="bqlv-live-body"><tr><td colspan="8">Loading…</td></tr></tbody>
                     </table>
                 </div>
             </div>
@@ -333,10 +382,10 @@ final class BQLV_Plugin {
                     <button type="button" class="button" id="bqlv-recent-toggle" aria-expanded="false" aria-controls="bqlv-recent-content">Show recent visitors</button>
                 </div>
                 <div id="bqlv-recent-content" hidden>
-                    <p class="description">Sessions whose last heartbeat is outside the live window. Last seen is the last recorded activity, not a confirmed disconnect time. Records are kept for the retention period set below; up to 100 recent sessions are shown.</p>
+                    <p class="description">Sessions whose last heartbeat is outside the live window. First seen plus recorded span describe the recorded session interval. Records are kept for the retention period set below; up to 100 recent sessions are shown.</p>
                     <p><button type="button" class="button" id="bqlv-recent-refresh">Refresh history</button> <span id="bqlv-recent-updated"></span></p>
                     <div class="bqlv-table-wrap"><table class="widefat striped">
-                        <thead><tr><th>Last page</th><th>Referrer</th><th>Browser / device</th><th>Timezone</th><th>First seen</th><th>Last seen</th><th>Recorded span</th><th>Session path</th></tr></thead>
+                        <thead><tr><th>Last page</th><th>IP address</th><th>Referrer</th><th>Browser / device</th><th>Timezone</th><th>First seen</th><th>Recorded span</th><th>Session path</th></tr></thead>
                         <tbody id="bqlv-recent-body"><tr><td colspan="8">Click Show recent visitors to load history.</td></tr></tbody>
                     </table></div>
                 </div>
@@ -345,7 +394,7 @@ final class BQLV_Plugin {
             <div class="bqlv-panel bqlv-settings">
                 <h2>Settings</h2>
                 <div class="bqlv-setting-row">
-                    <div><strong>Ignore this IP</strong><p>Your current IP is <?php echo $ignored ? '<strong>already ignored</strong>.' : 'not ignored yet.'; ?> Raw IP is not stored.</p></div>
+                    <div><strong>Ignore this IP</strong><p>Your current IP is <?php echo $ignored ? '<strong>already ignored</strong>.' : 'not ignored yet.'; ?> Ignored-IP matching still uses a one-way hash.</p></div>
                     <button class="button button-primary" id="bqlv-ignore-ip" <?php disabled($ignored); ?>><?php echo $ignored ? 'Current IP ignored' : 'Ignore my current IP'; ?></button>
                 </div>
 
@@ -425,6 +474,7 @@ final class BQLV_Plugin {
                 'browser' => $row->browser,
                 'device' => $row->device,
                 'timezone' => $row->timezone,
+                'ip_address' => $row->ip_address,
                 'on_site' => $this->dur(time() - strtotime($row->first_seen . ' UTC')),
                 'last_active' => $this->dur(max(0, time() - strtotime($row->last_seen . ' UTC'))) . ' ago',
                 'journey' => $journey,
@@ -460,7 +510,7 @@ final class BQLV_Plugin {
         $end = gmdate('Y-m-d H:i:s', time() - $window);
         $start = gmdate('Y-m-d H:i:s', time() - $retention * DAY_IN_SECONDS);
         $rows = $wpdb->get_results($wpdb->prepare(
-            "SELECT session_hash,current_path,page_title,referrer,first_seen,last_seen,browser,device,timezone FROM $s WHERE last_seen < %s AND last_seen >= %s ORDER BY last_seen DESC LIMIT 100",
+            "SELECT session_hash,current_path,page_title,referrer,first_seen,last_seen,browser,device,timezone,ip_address FROM $s WHERE last_seen < %s AND last_seen >= %s ORDER BY last_seen DESC LIMIT 100",
             $end, $start
         ));
         $out = [];
@@ -477,8 +527,8 @@ final class BQLV_Plugin {
                 'browser' => $row->browser,
                 'device' => $row->device,
                 'timezone' => $row->timezone,
+                'ip_address' => $row->ip_address,
                 'first_seen' => wp_date('Y-m-d H:i:s', strtotime($row->first_seen . ' UTC')),
-                'last_seen' => wp_date('Y-m-d H:i:s', strtotime($row->last_seen . ' UTC')),
                 'recorded_span' => $this->dur(strtotime($row->last_seen . ' UTC') - strtotime($row->first_seen . ' UTC')),
                 'journey' => $journey,
             ];

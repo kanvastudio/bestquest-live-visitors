@@ -2,7 +2,7 @@
 Tags: live visitors, visitor tracking, analytics, real time, visitor history
 Requires at least: 6.5
 Requires PHP: 8.0
-Stable tag: 1.3.4
+Stable tag: 1.4.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -46,7 +46,7 @@ No. Visitor activity is submitted to your own WordPress REST endpoint and stored
 
 = Does it store raw IP addresses? =
 
-No raw IP addresses are saved in the plugin's visitor tables. The request IP is used transiently for traffic limits and optional local exclusion; exclusion entries are salted one-way hashes.
+Yes. Since version 1.4.0, each session can retain the request IP address locally for the configured retention period (7 days by default) so administrators can investigate probes and abusive traffic. Ignored-IP entries remain salted one-way hashes.
 
 = Does it require consent? =
 
@@ -61,6 +61,12 @@ Deactivation stops tracking and the scheduled cleanup task. By default it leaves
 The default retention is 7 days; the dashboard allows changing this between 1 and 30 days. Cleanup is performed by WordPress cron, which depends on site traffic or an external cron setup.
 
 == Changelog ==
+
+= 1.4.0 =
+* Added administrator-only IP address display for live and recent sessions.
+* Recent-history view now shows First seen + Recorded span instead of redundant Last seen.
+* Front-end tracker no longer loads on WordPress 404 pages, reducing scanner noise.
+* Existing session rows from earlier versions cannot recover past IP addresses and will show blank IPs.
 
 = 1.3.4 =
 * Packaging and documentation release: GPL license text, WordPress.org readme, privacy policy guidance, and security notes.
@@ -86,5 +92,5 @@ The default retention is 7 days; the dashboard allows changing this between 1 an
 
 == Upgrade Notice ==
 
-= 1.3.4 =
-Adds full licensing and WordPress.org-style documentation; existing session data and settings are preserved.
+= 1.4.0 =
+Adds short-retention IP visibility, simplifies recent-session timing columns, and suppresses tracking on WordPress 404 pages. Existing settings and session history are preserved; pre-upgrade rows cannot recover past IP addresses.

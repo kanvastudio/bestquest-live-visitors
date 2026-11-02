@@ -1,12 +1,12 @@
 # Privacy and data handling
 
-BestQuest Live Visitors v1.3.3 operates locally on the WordPress site where it is installed. It does not intentionally transmit analytics records to BestQuest or any external analytics provider.
+BestQuest Live Visitors v1.4.0 operates locally on the WordPress site where it is installed. It does not intentionally transmit analytics records to BestQuest or any external analytics provider.
 
 ## Collected data
 
 - Random browser identifier in `localStorage` (`bqlv_vid`) and per-tab session identifier in `sessionStorage` (`bqlv_sid`). They are sent to the site's REST endpoint and stored as salted HMAC hashes in the database.
-- Page paths without query strings, page titles, referring website origin (not the full external path), approximate browser and device types, browser-reported timezone, and first/last recorded activity timestamps.
-- The visitor's network IP is inspected transiently to apply a request rate limit and, if the administrator chooses, ignore traffic from that IP. Ignored IP values are stored as one-way keyed hashes. Raw IPs are not stored in the plugin's visitor tables; hosting and web-server logs are separate.
+- Page paths without query strings, page titles, referring website origin (not the full external path), approximate browser and device types, browser-reported timezone, network IP address, and first/last recorded activity timestamps.
+- The visitor's network IP is stored in the local session table so administrators can distinguish human visits from probes and abusive traffic. It is deleted with the session according to the configured retention period. Ignored-IP matching continues to use a one-way keyed hash. Hosting and web-server logs are separate.
 
 ## Storage and retention
 
