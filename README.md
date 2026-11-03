@@ -1,10 +1,10 @@
 # BestQuest Live Visitors
 
-A self-hosted WordPress live visitor dashboard with recent session history and short-retention IP visibility for administrators.
+A self-hosted WordPress live visitor dashboard with recent session history, short-retention IP visibility, and affiliate-link click tracking for administrators.
 
 **Website:** https://bestquest.net/  
 **License:** GPL-2.0-or-later (see `LICENSE`)  
-**Current package:** 1.4.0
+**Current package:** 1.5.3
 
 ## Public BestQuest credit (GitHub edition)
 
@@ -14,7 +14,9 @@ A self-hosted WordPress live visitor dashboard with recent session history and s
 
 - Approximate live and recently active visitor counts
 - Last visited page, referrer origin, browser/device, timezone
-- Expandable page journeys and recent session history
+- Page-journey data retained internally for session tracking without occupying a permanent dashboard column
+- Article-link click tracking with link text, destination, source page, and click time
+- Dashboard Action column for live and recent sessions
 - IP-hash-based exclusions for site owners
 - Adjustable retention (default seven days)
 

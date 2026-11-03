@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: BestQuest Live Visitors
- * Description: Lightweight anonymous real-time visitor dashboard for WordPress.
- * Version: 1.4.0
+ * Description: Lightweight real-time visitor and affiliate-click dashboard for WordPress.
+ * Version: 1.5.3
  * Plugin URI: https://bestquest.net/
  * Author: BestQuest
  * Author URI: https://bestquest.net/
@@ -22,8 +22,8 @@
 if (!defined('ABSPATH')) exit;
 
 final class BQLV_Plugin {
-    const VERSION = '1.4.0';
-    const DB_VERSION = '1.4.0';
+    const VERSION = '1.5.3';
+    const DB_VERSION = '1.5.0';
     const OPT_DB_VERSION = 'bqlv_db_version';
     const NS = 'bestquest-live/v1';
     const OPT_IPS = 'bqlv_ignored_ip_hashes';
@@ -96,11 +96,15 @@ final class BQLV_Plugin {
         dbDelta("CREATE TABLE $e (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             session_hash char(64) NOT NULL,
+            event_type varchar(20) NOT NULL DEFAULT 'page',
             path varchar(1024) NOT NULL DEFAULT '',
             page_title varchar(255) NOT NULL DEFAULT '',
+            action_text varchar(255) NOT NULL DEFAULT '',
+            action_url varchar(2048) NOT NULL DEFAULT '',
             seen_at datetime NOT NULL,
             PRIMARY KEY (id),
             KEY session_hash (session_hash),
+            KEY event_type (event_type),
             KEY seen_at (seen_at)
         ) $charset;");
 
@@ -145,11 +149,15 @@ final class BQLV_Plugin {
         dbDelta("CREATE TABLE $e (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             session_hash char(64) NOT NULL,
+            event_type varchar(20) NOT NULL DEFAULT 'page',
             path varchar(1024) NOT NULL DEFAULT '',
             page_title varchar(255) NOT NULL DEFAULT '',
+            action_text varchar(255) NOT NULL DEFAULT '',
+            action_url varchar(2048) NOT NULL DEFAULT '',
             seen_at datetime NOT NULL,
             PRIMARY KEY (id),
             KEY session_hash (session_hash),
+            KEY event_type (event_type),
             KEY seen_at (seen_at)
         ) $charset;");
 
@@ -189,6 +197,7 @@ final class BQLV_Plugin {
         wp_enqueue_script('bqlv-live', plugins_url('assets/live.js', __FILE__), [], self::VERSION, true);
         wp_localize_script('bqlv-live', 'BQLV', [
             'endpoint' => esc_url_raw(rest_url(self::NS . '/heartbeat')),
+            'actionEndpoint' => esc_url_raw(rest_url(self::NS . '/action')),
             'heartbeat' => max(10, min(120, (int)get_option(self::OPT_HEARTBEAT, 20))),
         ]);
     }
@@ -197,6 +206,11 @@ final class BQLV_Plugin {
         register_rest_route(self::NS, '/heartbeat', [
             'methods' => 'POST',
             'callback' => [$this, 'heartbeat'],
+            'permission_callback' => '__return_true',
+        ]);
+        register_rest_route(self::NS, '/action', [
+            'methods' => 'POST',
+            'callback' => [$this, 'record_action'],
             'permission_callback' => '__return_true',
         ]);
     }
@@ -294,7 +308,7 @@ final class BQLV_Plugin {
             ], ['id' => (int)$row->id]);
 
             if ((string)$row->current_path !== $path) {
-                $wpdb->insert($e, ['session_hash' => $sh, 'path' => $path, 'page_title' => $title, 'seen_at' => $now]);
+                $wpdb->insert($e, ['session_hash' => $sh, 'event_type' => 'page', 'path' => $path, 'page_title' => $title, 'seen_at' => $now]);
             }
         } else {
             $wpdb->insert($s, [
@@ -310,8 +324,119 @@ final class BQLV_Plugin {
                 'timezone' => $tz,
                 'ip_address' => $ip,
             ]);
-            $wpdb->insert($e, ['session_hash' => $sh, 'path' => $path, 'page_title' => $title, 'seen_at' => $now]);
+            $wpdb->insert($e, ['session_hash' => $sh, 'event_type' => 'page', 'path' => $path, 'page_title' => $title, 'seen_at' => $now]);
         }
+
+        return new WP_REST_Response(['tracked' => true], 200);
+    }
+
+    public function record_action(WP_REST_Request $request) {
+        if (!$this->should_track()) return new WP_REST_Response(['tracked' => false], 200);
+
+        // Separate click-event burst cap so repeated or scripted clicks cannot create unbounded writes.
+        $remote = $this->client_ip();
+        if ($remote) {
+            $bucket = 'bqlv_action_rl_' . substr($this->ip_hash($remote), 0, 32);
+            $hits = (int)get_transient($bucket);
+            if ($hits >= 60) return new WP_REST_Response(['tracked' => false], 429);
+            set_transient($bucket, $hits + 1, MINUTE_IN_SECONDS);
+        }
+
+        $p = $request->get_json_params();
+        $p = is_array($p) ? $p : [];
+        $vid = sanitize_text_field($p['visitor'] ?? '');
+        $sid = sanitize_text_field($p['session'] ?? '');
+        if (!preg_match('/^[a-f0-9-]{36}$/i', $vid) || !preg_match('/^[a-f0-9-]{36}$/i', $sid)) {
+            return new WP_REST_Response(['tracked' => false], 400);
+        }
+
+        $origin = (string)($_SERVER['HTTP_ORIGIN'] ?? '');
+        if ($origin && wp_parse_url($origin, PHP_URL_HOST) !== wp_parse_url(home_url(), PHP_URL_HOST)) {
+            return new WP_REST_Response(['tracked' => false], 403);
+        }
+
+        $action_url = esc_url_raw((string)($p['action_url'] ?? ''), ['http', 'https']);
+        if (!$action_url) return new WP_REST_Response(['tracked' => false], 400);
+        $action_url = mb_substr($action_url, 0, 2048);
+        $action_text = mb_substr(sanitize_text_field($p['action_text'] ?? ''), 0, 255);
+        if ($action_text === '') $action_text = 'Tracked link';
+
+        $vh = hash_hmac('sha256', $vid, wp_salt('secure_auth'));
+        $sh = hash_hmac('sha256', $sid, wp_salt('nonce'));
+        $path = $this->clean_path($p['path'] ?? '/');
+        $title = mb_substr(sanitize_text_field($p['title'] ?? ''), 0, 255);
+        $ref = $this->clean_referrer($p['referrer'] ?? '');
+        $tz = mb_substr(sanitize_text_field($p['timezone'] ?? ''), 0, 128);
+        $ua = isset($_SERVER['HTTP_USER_AGENT']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT'])) : '';
+        $now = current_time('mysql', true);
+        $ip = $this->client_ip();
+
+        global $wpdb;
+        $s = $this->sessions_table();
+        $e = $this->events_table();
+        $row = $wpdb->get_row($wpdb->prepare(
+            "SELECT id,current_path,visitor_hash FROM $s WHERE session_hash=%s LIMIT 1",
+            $sh
+        ));
+
+        if ($row && !hash_equals((string)$row->visitor_hash, $vh)) {
+            return new WP_REST_Response(['tracked' => false], 409);
+        }
+
+        if ($row) {
+            $wpdb->update($s, [
+                'current_path' => $path,
+                'page_title' => $title,
+                'last_seen' => $now,
+                'browser' => $this->browser($ua),
+                'device' => $this->device($ua),
+                'timezone' => $tz,
+                'ip_address' => $ip,
+            ], ['id' => (int)$row->id]);
+
+            // If the click arrives before the next heartbeat after navigation, keep the page journey complete.
+            if ((string)$row->current_path !== $path) {
+                $wpdb->insert($e, [
+                    'session_hash' => $sh,
+                    'event_type' => 'page',
+                    'path' => $path,
+                    'page_title' => $title,
+                    'seen_at' => $now,
+                ]);
+            }
+        } else {
+            // A very fast click can race the initial heartbeat; create the session rather than losing the action.
+            $wpdb->insert($s, [
+                'session_hash' => $sh,
+                'visitor_hash' => $vh,
+                'current_path' => $path,
+                'page_title' => $title,
+                'referrer' => $ref,
+                'first_seen' => $now,
+                'last_seen' => $now,
+                'browser' => $this->browser($ua),
+                'device' => $this->device($ua),
+                'timezone' => $tz,
+                'ip_address' => $ip,
+            ]);
+            $wpdb->insert($e, [
+                'session_hash' => $sh,
+                'event_type' => 'page',
+                'path' => $path,
+                'page_title' => $title,
+                'seen_at' => $now,
+            ]);
+        }
+
+        $wpdb->insert($e, [
+            'session_hash' => $sh,
+            'event_type' => 'click',
+            'path' => $path,
+            'page_title' => $title,
+            'action_text' => $action_text,
+            'action_url' => $action_url,
+            'seen_at' => $now,
+        ]);
 
         return new WP_REST_Response(['tracked' => true], 200);
     }
@@ -369,7 +494,7 @@ final class BQLV_Plugin {
                     <table class="widefat striped">
                         <thead><tr>
                             <th>Current page</th><th>Referrer</th><th>Browser / device</th>
-                            <th>IP address</th><th>Timezone</th><th>Since first seen</th><th>Last heartbeat</th><th>Session path</th>
+                            <th>IP address</th><th>Timezone</th><th>Action</th><th>Since first seen</th><th>Last heartbeat</th>
                         </tr></thead>
                         <tbody id="bqlv-live-body"><tr><td colspan="8">Loading…</td></tr></tbody>
                     </table>
@@ -385,7 +510,7 @@ final class BQLV_Plugin {
                     <p class="description">Sessions whose last heartbeat is outside the live window. First seen plus recorded span describe the recorded session interval. Records are kept for the retention period set below; up to 100 recent sessions are shown.</p>
                     <p><button type="button" class="button" id="bqlv-recent-refresh">Refresh history</button> <span id="bqlv-recent-updated"></span></p>
                     <div class="bqlv-table-wrap"><table class="widefat striped">
-                        <thead><tr><th>Last page</th><th>IP address</th><th>Referrer</th><th>Browser / device</th><th>Timezone</th><th>First seen</th><th>Recorded span</th><th>Session path</th></tr></thead>
+                        <thead><tr><th>Last page</th><th>IP address</th><th>Referrer</th><th>Browser / device</th><th>Timezone</th><th>Action</th><th>First seen</th><th>Recorded span</th></tr></thead>
                         <tbody id="bqlv-recent-body"><tr><td colspan="8">Click Show recent visitors to load history.</td></tr></tbody>
                     </table></div>
                 </div>
@@ -440,6 +565,28 @@ final class BQLV_Plugin {
         return $h . 'h ' . ($m % 60) . 'm';
     }
 
+    private function session_actions($session_hash, $limit = 10) {
+        global $wpdb;
+        $limit = max(1, min(25, (int)$limit));
+        $e = $this->events_table();
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT path,page_title,action_text,action_url,seen_at FROM $e WHERE session_hash=%s AND event_type='click' ORDER BY seen_at DESC,id DESC LIMIT %d",
+            $session_hash,
+            $limit
+        ));
+        $out = [];
+        foreach ($rows as $row) {
+            $out[] = [
+                'text' => $row->action_text,
+                'url' => $row->action_url,
+                'path' => $row->path,
+                'page_title' => $row->page_title,
+                'time' => wp_date('H:i:s', strtotime($row->seen_at . ' UTC')),
+            ];
+        }
+        return $out;
+    }
+
     public function ajax_live_data() {
         $this->admin_ajax_guard();
         global $wpdb;
@@ -463,11 +610,12 @@ final class BQLV_Plugin {
             }
             $seen_visitors[$row->visitor_hash] = true;
 
-            $jr = $wpdb->get_results($wpdb->prepare("SELECT path,page_title FROM $e WHERE session_hash=%s ORDER BY seen_at ASC LIMIT 20", $row->session_hash));
+            $jr = $wpdb->get_results($wpdb->prepare("SELECT path,page_title FROM $e WHERE session_hash=%s AND event_type='page' ORDER BY seen_at ASC LIMIT 20", $row->session_hash));
             $journey = [];
             foreach ($jr as $j) $journey[] = ['path' => $j->path, 'title' => $j->page_title];
 
             $out[] = [
+                'session_key' => substr($row->session_hash, 0, 16),
                 'path' => $row->current_path,
                 'title' => $row->page_title,
                 'referrer' => $row->referrer,
@@ -478,6 +626,7 @@ final class BQLV_Plugin {
                 'on_site' => $this->dur(time() - strtotime($row->first_seen . ' UTC')),
                 'last_active' => $this->dur(max(0, time() - strtotime($row->last_seen . ' UTC'))) . ' ago',
                 'journey' => $journey,
+                'actions' => $this->session_actions($row->session_hash),
             ];
         }
 
@@ -516,11 +665,12 @@ final class BQLV_Plugin {
         $out = [];
         foreach ($rows as $row) {
             $events = $wpdb->get_results($wpdb->prepare(
-                "SELECT path,page_title FROM $e WHERE session_hash=%s ORDER BY seen_at ASC LIMIT 30", $row->session_hash
+                "SELECT path,page_title FROM $e WHERE session_hash=%s AND event_type='page' ORDER BY seen_at ASC LIMIT 30", $row->session_hash
             ));
             $journey = [];
             foreach ($events as $event) $journey[] = ['path' => $event->path, 'title' => $event->page_title];
             $out[] = [
+                'session_key' => substr($row->session_hash, 0, 16),
                 'path' => $row->current_path,
                 'title' => $row->page_title,
                 'referrer' => $row->referrer,
@@ -531,6 +681,7 @@ final class BQLV_Plugin {
                 'first_seen' => wp_date('Y-m-d H:i:s', strtotime($row->first_seen . ' UTC')),
                 'recorded_span' => $this->dur(strtotime($row->last_seen . ' UTC') - strtotime($row->first_seen . ' UTC')),
                 'journey' => $journey,
+                'actions' => $this->session_actions($row->session_hash),
             ];
         }
         wp_send_json_success(['rows' => $out, 'updated' => current_time('H:i:s')]);

@@ -14,12 +14,37 @@
     return r.json();
   };
 
+  const renderActions = (row, isOpen = false) => {
+    const actions = Array.isArray(row.actions) ? row.actions : [];
+    if (!actions.length) return '<span class="bqlv-no-action">—</span>';
+
+    const latest = actions[0];
+    const latestText = esc(latest.text || 'Tracked link');
+    const latestMeta = `${esc(latest.time || '')}${latest.path ? ` · ${esc(latest.path)}` : ''}`;
+
+    const history = actions.map(action => `
+      <div class="bqlv-action-item">
+        <div><strong>${esc(action.time || '')}</strong> ${esc(action.text || 'Tracked link')}</div>
+        ${action.path ? `<div class="bqlv-action-page">From ${esc(action.page_title || action.path)} <code>${esc(action.path)}</code></div>` : ''}
+        ${action.url ? `<code class="bqlv-action-url">${esc(action.url)}</code>` : ''}
+      </div>`).join('');
+
+    return `<div class="bqlv-action-latest"><strong>Clicked:</strong> ${latestText}</div>
+      <div class="bqlv-action-meta">${latestMeta}</div>
+      <details class="bqlv-action-details" data-action-key="${esc(row.session_key || '')}"${isOpen ? ' open' : ''}><summary>${actions.length === 1 ? 'Destination' : `${actions.length} tracked clicks`}</summary>${history}</details>`;
+  };
+
   const render = data => {
     $('#bqlv-live-count').textContent = data.live_count;
     $('#bqlv-active-count').textContent = data.active_15m;
     $('#bqlv-pageviews').textContent = data.visitors_today;
     $('#bqlv-updated').textContent = 'Updated ' + data.updated;
     const tb = $('#bqlv-live-body');
+    const openActionKeys = new Set(
+      Array.from(tb.querySelectorAll('details.bqlv-action-details[open][data-action-key]'))
+        .map(details => details.dataset.actionKey)
+        .filter(Boolean)
+    );
 
     if (!data.rows.length) {
       tb.innerHTML = '<tr><td colspan="8">No live visitors right now.</td></tr>';
@@ -27,18 +52,17 @@
     }
 
     tb.innerHTML = data.rows.map(row => {
-      const journey = (row.journey || []).map((j,i)=>
-        `<div>${i+1}. ${esc(j.title || j.path)}</div>`).join('');
       const ref = row.referrer === 'Internal' ? 'Internal' :
         (row.referrer ? `<a href="${esc(row.referrer)}" target="_blank" rel="noopener">${esc(row.referrer)}</a>` : 'Direct / unknown');
       return `<tr>
         <td><strong>${esc(row.title || row.path)}</strong><br><code>${esc(row.path)}</code></td>
         <td class="bqlv-ref">${ref}</td>
         <td>${esc(row.browser)} / ${esc(row.device)}</td>
-        <td><code>${esc(row.ip_address || '—')}</code></td><td>${esc(row.timezone || '—')}</td>
+        <td><code>${esc(row.ip_address || '—')}</code></td>
+        <td>${esc(row.timezone || '—')}</td>
+        <td class="bqlv-action-cell">${renderActions(row, openActionKeys.has(row.session_key || ''))}</td>
         <td>${esc(row.on_site)}</td>
         <td>${esc(row.last_active)}</td>
-        <td><details><summary>${row.journey.length} page${row.journey.length===1?'':'s'}</summary>${journey}</details></td>
       </tr>`;
     }).join('');
   };
@@ -53,20 +77,23 @@
   const recentPanel = $('#bqlv-recent-content');
   const loadRecent = async () => {
     const tbody = $('#bqlv-recent-body');
+    const openActionKeys = new Set(
+      Array.from(tbody.querySelectorAll('details.bqlv-action-details[open][data-action-key]'))
+        .map(details => details.dataset.actionKey)
+        .filter(Boolean)
+    );
     tbody.innerHTML = '<tr><td colspan="8">Loading…</td></tr>';
     try {
       const r = await post('bqlv_recent_data');
       if (!r.success) throw new Error('Request failed');
       const rows = r.data.rows || [];
       tbody.innerHTML = rows.length ? rows.map(row => {
-        const journey = (row.journey || []).map((j,i) => `<div>${i+1}. ${esc(j.title || j.path)}</div>`).join('');
         const ref = row.referrer === 'Internal' ? 'Internal' :
           (row.referrer ? esc(row.referrer) : 'Direct / unknown');
         return `<tr><td><strong>${esc(row.title || row.path)}</strong><br><code>${esc(row.path)}</code></td>
           <td><code>${esc(row.ip_address || '—')}</code></td><td>${ref}</td><td>${esc(row.browser)} / ${esc(row.device)}</td>
-          <td>${esc(row.timezone || '—')}</td><td>${esc(row.first_seen)}</td>
-          <td>${esc(row.recorded_span)}</td>
-          <td><details><summary>${(row.journey || []).length} pages</summary>${journey}</details></td></tr>`;
+          <td>${esc(row.timezone || '—')}</td><td class="bqlv-action-cell">${renderActions(row, openActionKeys.has(row.session_key || ''))}</td>
+          <td>${esc(row.first_seen)}</td><td>${esc(row.recorded_span)}</td></tr>`;
       }).join('') : '<tr><td colspan="8">No ended or inactive sessions within the retention period.</td></tr>';
       $('#bqlv-recent-updated').textContent = 'Updated ' + r.data.updated;
     } catch (e) {

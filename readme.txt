@@ -2,11 +2,11 @@
 Tags: live visitors, visitor tracking, analytics, real time, visitor history
 Requires at least: 6.5
 Requires PHP: 8.0
-Stable tag: 1.4.0
+Stable tag: 1.5.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-A self-hosted WordPress dashboard showing approximate live visitor activity, session paths, referrers, and recent sessions.
+A self-hosted WordPress dashboard showing approximate live visitor activity, article-link clicks, referrers, and recent sessions.
 
 == Description ==
 
@@ -14,13 +14,15 @@ BestQuest Live Visitors provides a lightweight WordPress admin dashboard showing
 
 * Approximate live visitors and visitors active in the last 15 minutes.
 * Approximate distinct browser identifiers observed today.
-* Current page and recorded session path.
+* Current/last page, while page-journey data remains stored internally for session tracking.
+* Tracked article-link clicks, including link text, destination URL, source page, and click time.
+* Action column for live and recent visitor sessions.
 * Referrer origin, browser/device family, and browser-reported timezone.
 * Recent sessions after their last heartbeat falls outside the live window.
 * Configurable heartbeat interval, live timeout, and data retention.
 * Exclusion of administrator traffic and optional exclusion by a locally hashed IP address.
 
-No external analytics service or API key is required. The tracker stores data in the site's own WordPress database. Session duration is elapsed first-to-last recorded heartbeat, not verified time spent reading. An inactive session is not proof that a user disconnected. Cookie blocking, ad blockers, browser privacy features, and bots can affect counts.
+No external analytics service or API key is required. By default, click tracking applies to links inside article content (`.entry-content`), links using the BestQuest affiliate class `bq-affiliate-text-link`, links inside `bq-affiliate-cta`, links with `rel="sponsored"`, links using `bq-track-click`, and links marked with `data-bqlv-track="click"`. Header, menu, footer, and WordPress admin navigation are not tracked unless explicitly marked. The tracker stores data in the site's own WordPress database. Session duration is elapsed first-to-last recorded heartbeat, not verified time spent reading. An inactive session is not proof that a user disconnected. Cookie blocking, ad blockers, browser privacy features, and bots can affect counts.
 
 Developed by BestQuest: https://bestquest.net/
 
@@ -62,6 +64,31 @@ The default retention is 7 days; the dashboard allows changing this between 1 an
 
 == Changelog ==
 
+= 1.5.3 =
+* Action click-history dropdowns now remain open across the automatic Live visitors refresh.
+* Closing a dropdown keeps it closed on the next refresh.
+* Live refresh interval and tracking behavior are unchanged.
+* No database schema change; existing data is preserved.
+
+= 1.5.2 =
+* Removed the visible Session path column from Live visitors and Recent visitors.
+* Page-journey events continue to be recorded internally; no tracking data is deleted.
+* Gives the Action column more room and reduces dashboard clutter.
+* No database schema change; existing data is preserved.
+
+= 1.5.1 =
+* Track ordinary links inside article content, not only affiliate/sponsored links.
+* Keep header, menu, footer, and WordPress admin navigation out of Action unless explicitly marked.
+* Ignore non-HTTP link schemes for click-event storage.
+* No database schema change; existing v1.5.0 data is preserved.
+
+= 1.5.0 =
+* Added affiliate/sponsored link click tracking.
+* Added an Action column to live and recent visitor tables.
+* Click events record link text, destination URL, source page, and click time in the local events table.
+* Added explicit `bq-track-click` and `data-bqlv-track="click"` hooks for tracking additional links without tracking all site navigation.
+* Existing page/session history is preserved during the database upgrade.
+
 = 1.4.0 =
 * Added administrator-only IP address display for live and recent sessions.
 * Recent-history view now shows First seen + Recorded span instead of redundant Last seen.
@@ -91,6 +118,18 @@ The default retention is 7 days; the dashboard allows changing this between 1 an
 * Improved visitor counting and dashboard summary counters.
 
 == Upgrade Notice ==
+
+= 1.5.3 =
+Keeps expanded Action histories open while the live dashboard refreshes. No database migration is required.
+
+= 1.5.2 =
+Removes the visible Session path column while preserving page-journey data internally. No database migration is required.
+
+= 1.5.1 =
+Expands Action tracking to ordinary article-content links. No database migration is required and existing visitor/session/click data is preserved.
+
+= 1.5.0 =
+Adds affiliate/sponsored link click tracking and an Action column. The existing events table is upgraded in place; current settings and historical page/session data are preserved.
 
 = 1.4.0 =
 Adds short-retention IP visibility, simplifies recent-session timing columns, and suppresses tracking on WordPress 404 pages. Existing settings and session history are preserved; pre-upgrade rows cannot recover past IP addresses.
