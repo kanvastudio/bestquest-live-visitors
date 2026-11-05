@@ -1,31 +1,39 @@
-# Privacy and data handling
+# Privacy notes — BestQuest Live Visitors v1.5.4
 
-BestQuest Live Visitors v1.4.0 operates locally on the WordPress site where it is installed. It does not intentionally transmit analytics records to BestQuest or any external analytics provider.
+BestQuest Live Visitors operates locally on the WordPress site where it is installed. It does not intentionally transmit analytics records to BestQuest or an external analytics provider.
 
-## Collected data
+## Data processed
 
 - Random browser identifier in `localStorage` (`bqlv_vid`) and per-tab session identifier in `sessionStorage` (`bqlv_sid`). They are sent to the site's REST endpoint and stored as salted HMAC hashes in the database.
-- Page paths without query strings, page titles, referring website origin (not the full external path), approximate browser and device types, browser-reported timezone, network IP address, and first/last recorded activity timestamps.
-- The visitor's network IP is stored in the local session table so administrators can distinguish human visits from probes and abusive traffic. It is deleted with the session according to the configured retention period. Ignored-IP matching continues to use a one-way keyed hash. Hosting and web-server logs are separate.
+- Current/last path, page title, referring origin, browser/device family, browser-reported timezone, heartbeat timestamps, and tracked article-link click details.
+- The request IP can be stored in the local session table when **Store visitor IP addresses** is enabled (default). Turning that setting off immediately clears IP addresses already stored by this plugin.
+- Ignored-IP entries remain salted one-way hashes.
+
+The request IP can still be used transiently for rate limiting even when raw IP storage is disabled; transient throttle keys contain keyed hashes rather than the raw IP.
+
+## Consent and integration controls
+
+Frontend tracking can be disabled globally in Live Visitors > Settings. Developers can also use:
+
+- `bqlv_tracking_enabled` — global server-side tracking gate.
+- `bqlv_should_track_request` — per-request gate suitable for consent-cookie logic.
+- `bqlv_store_ip_address` — controls whether new session rows retain the raw IP.
+- `bqlv_client_ip` — allows a site owner to provide an address from a trusted proxy/CDN integration. Forwarding headers must not be trusted without verifying the proxy.
+
+The plugin uses localStorage and sessionStorage, so website operators remain responsible for consent and disclosure requirements in their jurisdictions. Full-page caching must also be considered when implementing per-visitor consent logic.
 
 ## Storage and retention
 
-Data is stored in local WordPress database tables `{$prefix}bqlv_sessions` and `{$prefix}bqlv_events`; settings are stored in WordPress options. Session records are retained 7 days by default (configurable from 1 to 30 days), with cleanup performed by WordPress cron. The browser identifier in localStorage has no automatic expiry; clearing site data removes it. The session identifier is retained in sessionStorage until the tab's session ends or the plugin rotates it after inactivity.
+Data is stored in local WordPress database tables `{$prefix}bqlv_sessions` and `{$prefix}bqlv_events`; page-view and click events share the events table. Settings are stored in WordPress options. Session records are retained 7 days by default (configurable from 1 to 30 days), with cleanup performed by WordPress cron.
 
-## Visitor rights and consent
+The browser identifier in localStorage has no automatic expiry; clearing site data removes it. The session identifier is retained in sessionStorage until the tab's session ends or the plugin rotates it after inactivity.
 
-The plugin currently does **not** implement consent gating, a consent-management interface, or integration with WordPress personal-data export/erasure tools. In jurisdictions requiring consent for nonessential browser identifiers or behavioral analytics, website operators should obtain consent before loading the tracker. Consider disabling the plugin until suitable consent gating exists. Do not represent these hashes as fully anonymous under every applicable privacy law.
+## Deactivation and uninstall
 
-## Uninstallation
+Deactivation stops tracking and unschedules cleanup while preserving data for reactivation.
 
-Deactivation cancels the cleanup schedule, but leaves database tables and settings intact to preserve configuration if the plugin is reactivated. Site administrators who need permanent removal must delete the two tables and `bqlv_*` options through appropriate database administration after taking a backup. This is intentionally **not** done automatically.
+On plugin deletion, `uninstall.php` removes the two plugin tables and plugin-owned options by default. Administrators can disable **Delete BestQuest Live Visitors tables and settings when the plugin is deleted** if they intentionally want to preserve data for a later reinstall.
 
-## Scope
+## Security-related processing
 
-The browser and timezone are inferred or reported by the visitor's software and can be incorrect; bot filtering is heuristic. `Last seen` reflects the last successful heartbeat and cannot confirm a network disconnect. Recorded session span is not engaged time.
-
-Information about the developer: https://bestquest.net/
-
-## Public attribution
-
-The GitHub edition displays a footer link to https://bestquest.net/ on public pages by default. Administrators can disable the credit in Live Visitors settings. The link itself does not collect data, request remote resources, or transmit visitor information to BestQuest. Clicking it navigates to BestQuest like any other hyperlink.
+Version 1.5.4 uses a frontend WordPress nonce, same-site Origin/Referer validation, per-session and per-IP throttling, a new-session cap, and a per-session event ceiling. These controls reduce automated abuse but do not authenticate anonymous visitors as real humans.

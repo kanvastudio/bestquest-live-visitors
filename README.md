@@ -1,37 +1,36 @@
 # BestQuest Live Visitors
 
-A self-hosted WordPress live visitor dashboard with recent session history, short-retention IP visibility, and affiliate-link click tracking for administrators.
+A self-hosted WordPress live visitor dashboard with recent session history, optional short-retention IP visibility, and article-link click tracking for administrators.
 
-**Website:** https://bestquest.net/  
-**License:** GPL-2.0-or-later (see `LICENSE`)  
-**Current package:** 1.5.3
+Current package: **1.5.4**
 
-## Public BestQuest credit (GitHub edition)
+Website: https://bestquest.net/
 
-**On installation, the plugin displays a small footer credit on public pages:** “Visitor insights powered by BestQuest” linking to https://bestquest.net/. This is **enabled by default**, and site administrators can switch it off under **Live Visitors → Settings → Show public footer credit linking to BestQuest**. It never sends a tracking request to BestQuest. The link uses `rel="nofollow"` and is not intended as an SEO endorsement. This default-on link is not suitable for WordPress.org plugin directory submission; a separate version with default-off credit would be required.
+License: GPL-2.0-or-later
 
-## Features
+## v1.5.4 security and privacy hardening
 
-- Approximate live and recently active visitor counts
-- Last visited page, referrer origin, browser/device, timezone
-- Page-journey data retained internally for session tracking without occupying a permanent dashboard column
-- Article-link click tracking with link text, destination, source page, and click time
-- Dashboard Action column for live and recent sessions
-- IP-hash-based exclusions for site owners
-- Adjustable retention (default seven days)
+- Frontend WordPress nonce required for heartbeat/action requests.
+- Same-site Origin/Referer validation.
+- Per-session rate limits plus a higher shared-IP ceiling to reduce NAT false positives.
+- New-session creation capped per IP.
+- Maximum 500 stored events per session.
+- Trusted proxy/CDN IPs can be supplied only through the explicit `bqlv_client_ip` filter; forwarding headers are never trusted automatically.
+- Frontend tracking and raw-IP storage can be disabled in Settings.
+- Disabling IP storage immediately clears IP addresses already stored by the plugin.
+- `bqlv_tracking_enabled`, `bqlv_should_track_request`, and `bqlv_store_ip_address` filters are available for privacy/consent integrations.
+- `uninstall.php` removes plugin tables/settings on deletion by default; administrators can opt to preserve them.
 
-For detailed installation, FAQs, change history and directory metadata, see [`readme.txt`](readme.txt). For data processing and limitations, see [`PRIVACY.md`](PRIVACY.md); for vulnerability reporting, see [`SECURITY.md`](SECURITY.md).
+Security review credit: **BlueSA — Thembelani Mthethwa**.
 
-## Install
+## Important behavior
 
-Use WordPress **Plugins → Add New Plugin → Upload Plugin**, select the installable ZIP, activate it, and open **Live Visitors**. Test with the site's cache enabled.
+Anonymous analytics cannot be cryptographically tied to a real human visitor. The protections above reduce automated forgery and database-bloat risk but are not a guarantee against distributed or browser-capable automation.
 
-## Limitations
+IP storage is enabled by default to preserve the administrator IP column. It can be disabled at any time. Abuse throttling may still use the request IP transiently without writing that IP into the visitor table.
 
-The results are estimates: browser identifiers are not confirmed individuals, and inactivity does not prove a disconnect. The plugin uses browser storage and does not provide consent gating. Assess your site's privacy obligations before deployment.
+See `PRIVACY.md` and `SECURITY.md` for details.
 
-## License and attribution
+## Optional footer credit
 
-Copyright (c) 2026 BestQuest. Licensed under the GNU General Public License, version 2 or (at your option) any later version.
-
-Project and publisher: https://bestquest.net/
+BestQuest Live Visitors includes an optional public footer credit: “Visitor insights powered by BestQuest”. It is **disabled by default** and appears only after an administrator explicitly enables **Show public footer credit linking to BestQuest** under Live Visitors > Settings. It can be turned off again at any time.

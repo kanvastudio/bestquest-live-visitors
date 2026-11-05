@@ -125,12 +125,17 @@
     e.preventDefault();
     const msg = $('#bqlv-settings-msg');
     msg.textContent = ' Saving…';
-    const r = await post('bqlv_save_settings', {
+    const publicCredit = $('#bqlv-public-credit');
+    const payload = {
       heartbeat:$('#bqlv-heartbeat').value,
       live_window:$('#bqlv-live-window').value,
       retention:$('#bqlv-retention').value,
-      public_credit:$('#bqlv-public-credit').checked ? '1' : '0'
-    });
+      tracking_enabled:$('#bqlv-tracking-enabled')?.checked ? '1' : '0',
+      store_ip:$('#bqlv-store-ip')?.checked ? '1' : '0',
+      delete_on_uninstall:$('#bqlv-delete-on-uninstall')?.checked ? '1' : '0'
+    };
+    if (publicCredit) payload.public_credit = publicCredit.checked ? '1' : '0';
+    const r = await post('bqlv_save_settings', payload);
     msg.textContent = r.success ? ' Saved.' : ' Could not save.';
   });
 

@@ -2,8 +2,8 @@
 /**
  * Plugin Name: BestQuest Live Visitors
  * Description: Lightweight real-time visitor and affiliate-click dashboard for WordPress.
- * Version: 1.5.3
- * Plugin URI: https://bestquest.net/
+ * Version: 1.5.4
+ * Plugin URI: https://bestquest.net/bestquest-live-visitors-wordpress-plugin/
  * Author: BestQuest
  * Author URI: https://bestquest.net/
  * Requires at least: 6.5
@@ -22,14 +22,17 @@
 if (!defined('ABSPATH')) exit;
 
 final class BQLV_Plugin {
-    const VERSION = '1.5.3';
-    const DB_VERSION = '1.5.0';
+    const VERSION = '1.5.4';
+    const DB_VERSION = '1.5.4';
     const OPT_DB_VERSION = 'bqlv_db_version';
     const NS = 'bestquest-live/v1';
     const OPT_IPS = 'bqlv_ignored_ip_hashes';
     const OPT_HEARTBEAT = 'bqlv_heartbeat_seconds';
     const OPT_LIVE = 'bqlv_live_window_seconds';
     const OPT_RETENTION = 'bqlv_retention_days';
+    const OPT_TRACKING_ENABLED = 'bqlv_tracking_enabled';
+    const OPT_STORE_IP = 'bqlv_store_ip';
+    const OPT_DELETE_ON_UNINSTALL = 'bqlv_delete_on_uninstall';
     const OPT_PUBLIC_CREDIT = 'bqlv_public_credit';
 
     private static $instance;
@@ -112,7 +115,10 @@ final class BQLV_Plugin {
         add_option(self::OPT_LIVE, 60);
         add_option(self::OPT_RETENTION, 7);
         add_option(self::OPT_IPS, []);
-        add_option(self::OPT_PUBLIC_CREDIT, 1);
+        add_option(self::OPT_TRACKING_ENABLED, 1);
+        add_option(self::OPT_STORE_IP, 1);
+        add_option(self::OPT_DELETE_ON_UNINSTALL, 1);
+        add_option(self::OPT_PUBLIC_CREDIT, 0);
         update_option(self::OPT_DB_VERSION, self::DB_VERSION, false);
         if (!wp_next_scheduled('bqlv_cleanup_event')) {
             wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'bqlv_cleanup_event');
@@ -161,6 +167,10 @@ final class BQLV_Plugin {
             KEY seen_at (seen_at)
         ) $charset;");
 
+        add_option(self::OPT_TRACKING_ENABLED, 1);
+        add_option(self::OPT_STORE_IP, 1);
+        add_option(self::OPT_DELETE_ON_UNINSTALL, 1);
+        add_option(self::OPT_PUBLIC_CREDIT, 0);
         update_option(self::OPT_DB_VERSION, self::DB_VERSION, false);
     }
 
@@ -170,11 +180,30 @@ final class BQLV_Plugin {
     }
 
     private function client_ip() {
-        return isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '';
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '';
+        if (!filter_var($ip, FILTER_VALIDATE_IP)) $ip = '';
+
+        /**
+         * Allows a site owner to supply a trusted proxy/CDN client IP.
+         * Do not trust forwarding headers unless the proxy itself is trusted.
+         */
+        $filtered = apply_filters('bqlv_client_ip', $ip);
+        $filtered = is_string($filtered) ? trim($filtered) : '';
+        return filter_var($filtered, FILTER_VALIDATE_IP) ? $filtered : $ip;
     }
 
     private function ip_hash($ip) {
         return hash_hmac('sha256', (string)$ip, wp_salt('auth'));
+    }
+
+    private function tracking_enabled() {
+        $enabled = (bool)get_option(self::OPT_TRACKING_ENABLED, 1);
+        return (bool)apply_filters('bqlv_tracking_enabled', $enabled);
+    }
+
+    private function should_store_ip() {
+        $enabled = (bool)get_option(self::OPT_STORE_IP, 1);
+        return (bool)apply_filters('bqlv_store_ip_address', $enabled);
     }
 
     private function is_ignored_ip() {
@@ -185,11 +214,58 @@ final class BQLV_Plugin {
     }
 
     private function should_track() {
+        if (!$this->tracking_enabled()) return false;
         if ($this->is_ignored_ip()) return false;
         if (is_user_logged_in() && current_user_can('manage_options')) return false;
-        $ua = strtolower((string)($_SERVER['HTTP_USER_AGENT'] ?? ''));
+        $ua = isset($_SERVER['HTTP_USER_AGENT']) ? strtolower(sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT']))) : '';
         if (preg_match('/bot|crawler|spider|headless|lighthouse|pagespeed|uptime|monitor|python-requests|curl\//i', $ua)) return false;
+
+        /**
+         * Consent/privacy integration hook. A consent plugin can return false
+         * after inspecting its own cookie or request state.
+         */
+        return (bool)apply_filters('bqlv_should_track_request', true);
+    }
+
+    private function same_site_frontend_request(WP_REST_Request $request) {
+        $nonce = sanitize_text_field((string)$request->get_header('x-bqlv-nonce'));
+        if (!$nonce || !wp_verify_nonce($nonce, 'bqlv_frontend')) return false;
+
+        $site_host = strtolower((string)wp_parse_url(home_url(), PHP_URL_HOST));
+        if (!$site_host) return false;
+
+        $origin = isset($_SERVER['HTTP_ORIGIN']) ? esc_url_raw(wp_unslash($_SERVER['HTTP_ORIGIN'])) : '';
+        if ($origin) {
+            return strtolower((string)wp_parse_url($origin, PHP_URL_HOST)) === $site_host;
+        }
+
+        // Some privacy tools omit Origin. Accept an exact same-host Referer fallback.
+        $referer = isset($_SERVER['HTTP_REFERER']) ? esc_url_raw(wp_unslash($_SERVER['HTTP_REFERER'])) : '';
+        if ($referer) {
+            return strtolower((string)wp_parse_url($referer, PHP_URL_HOST)) === $site_host;
+        }
+
+        return false;
+    }
+
+    private function rate_limit_allows($scope, $identity, $limit) {
+        $identity = (string)$identity;
+        if ($identity === '') return true;
+        $key = 'bqlv_rl_' . substr(hash_hmac('sha256', $scope . '|' . $identity, wp_salt('nonce')), 0, 40);
+        $hits = (int)get_transient($key);
+        if ($hits >= (int)$limit) return false;
+        set_transient($key, $hits + 1, MINUTE_IN_SECONDS);
         return true;
+    }
+
+    private function session_event_count($session_hash) {
+        global $wpdb;
+        $e = $this->events_table();
+        return (int)$wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM %i WHERE session_hash=%s',
+            $e,
+            $session_hash
+        ));
     }
 
     public function enqueue_frontend() {
@@ -199,6 +275,7 @@ final class BQLV_Plugin {
             'endpoint' => esc_url_raw(rest_url(self::NS . '/heartbeat')),
             'actionEndpoint' => esc_url_raw(rest_url(self::NS . '/action')),
             'heartbeat' => max(10, min(120, (int)get_option(self::OPT_HEARTBEAT, 20))),
+            'nonce' => wp_create_nonce('bqlv_frontend'),
         ]);
     }
 
@@ -258,24 +335,25 @@ final class BQLV_Plugin {
 
     public function heartbeat(WP_REST_Request $request) {
         if (!$this->should_track()) return new WP_REST_Response(['tracked' => false], 200);
-
-        // Per-IP burst cap: limits automated database writes. Session IPs are retained only for the configured retention period.
-        $remote = $this->client_ip();
-        if ($remote) {
-            $bucket = 'bqlv_rl_' . substr($this->ip_hash($remote), 0, 32);
-            $hits = (int)get_transient($bucket);
-            if ($hits >= 120) return new WP_REST_Response(['tracked' => false], 429);
-            set_transient($bucket, $hits + 1, MINUTE_IN_SECONDS);
-        }
+        if (!$this->same_site_frontend_request($request)) return new WP_REST_Response(['tracked' => false], 403);
 
         $p = $request->get_json_params();
         $p = is_array($p) ? $p : [];
         $vid = sanitize_text_field($p['visitor'] ?? '');
         $sid = sanitize_text_field($p['session'] ?? '');
-        if (!preg_match('/^[a-f0-9-]{36}$/i', $vid) || !preg_match('/^[a-f0-9-]{36}$/i', $sid)) return new WP_REST_Response(['tracked' => false], 400);
-        // Block obvious same-origin cross-site submissions; browsers may omit Origin.
-        $origin = (string)($_SERVER['HTTP_ORIGIN'] ?? '');
-        if ($origin && wp_parse_url($origin, PHP_URL_HOST) !== wp_parse_url(home_url(), PHP_URL_HOST)) return new WP_REST_Response(['tracked' => false], 403);
+        if (!preg_match('/^[a-f0-9-]{36}$/i', $vid) || !preg_match('/^[a-f0-9-]{36}$/i', $sid)) {
+            return new WP_REST_Response(['tracked' => false], 400);
+        }
+
+        $remote = $this->client_ip();
+        // Normal tracking is 3-6 heartbeats/minute per session. The IP ceiling is
+        // intentionally much higher so many legitimate visitors can share NAT.
+        if (!$this->rate_limit_allows('heartbeat_session', $sid, 12)) {
+            return new WP_REST_Response(['tracked' => false], 429);
+        }
+        if ($remote && !$this->rate_limit_allows('heartbeat_ip', $remote, 600)) {
+            return new WP_REST_Response(['tracked' => false], 429);
+        }
 
         $vh = hash_hmac('sha256', $vid, wp_salt('secure_auth'));
         $sh = hash_hmac('sha256', $sid, wp_salt('nonce'));
@@ -285,18 +363,22 @@ final class BQLV_Plugin {
         $tz = mb_substr(sanitize_text_field($p['timezone'] ?? ''), 0, 128);
         $ua = isset($_SERVER['HTTP_USER_AGENT']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT'])) : '';
         $now = current_time('mysql', true);
-        $ip = $this->client_ip();
+        $stored_ip = $this->should_store_ip() ? $remote : '';
 
         global $wpdb;
         $s = $this->sessions_table();
         $e = $this->events_table();
-        $row = $wpdb->get_row($wpdb->prepare("SELECT id,current_path,visitor_hash FROM $s WHERE session_hash=%s LIMIT 1", $sh));
+        $row = $wpdb->get_row($wpdb->prepare(
+            'SELECT id,current_path,visitor_hash FROM %i WHERE session_hash=%s LIMIT 1',
+            $s,
+            $sh
+        ));
 
         if ($row && !hash_equals((string)$row->visitor_hash, $vh)) {
             return new WP_REST_Response(['tracked' => false], 409);
         }
+
         if ($row) {
-            // Reject mismatched visitor IDs rather than silently accepting them.
             $wpdb->update($s, [
                 'current_path' => $path,
                 'page_title' => $title,
@@ -304,13 +386,24 @@ final class BQLV_Plugin {
                 'browser' => $this->browser($ua),
                 'device' => $this->device($ua),
                 'timezone' => $tz,
-                'ip_address' => $ip,
+                'ip_address' => $stored_ip,
             ], ['id' => (int)$row->id]);
 
-            if ((string)$row->current_path !== $path) {
-                $wpdb->insert($e, ['session_hash' => $sh, 'event_type' => 'page', 'path' => $path, 'page_title' => $title, 'seen_at' => $now]);
+            if ((string)$row->current_path !== $path && $this->session_event_count($sh) < 500) {
+                $wpdb->insert($e, [
+                    'session_hash' => $sh,
+                    'event_type' => 'page',
+                    'path' => $path,
+                    'page_title' => $title,
+                    'seen_at' => $now,
+                ]);
             }
         } else {
+            // A single network address can create at most 60 new sessions/minute.
+            if ($remote && !$this->rate_limit_allows('new_session_ip', $remote, 60)) {
+                return new WP_REST_Response(['tracked' => false], 429);
+            }
+
             $wpdb->insert($s, [
                 'session_hash' => $sh,
                 'visitor_hash' => $vh,
@@ -322,9 +415,15 @@ final class BQLV_Plugin {
                 'browser' => $this->browser($ua),
                 'device' => $this->device($ua),
                 'timezone' => $tz,
-                'ip_address' => $ip,
+                'ip_address' => $stored_ip,
             ]);
-            $wpdb->insert($e, ['session_hash' => $sh, 'event_type' => 'page', 'path' => $path, 'page_title' => $title, 'seen_at' => $now]);
+            $wpdb->insert($e, [
+                'session_hash' => $sh,
+                'event_type' => 'page',
+                'path' => $path,
+                'page_title' => $title,
+                'seen_at' => $now,
+            ]);
         }
 
         return new WP_REST_Response(['tracked' => true], 200);
@@ -332,15 +431,7 @@ final class BQLV_Plugin {
 
     public function record_action(WP_REST_Request $request) {
         if (!$this->should_track()) return new WP_REST_Response(['tracked' => false], 200);
-
-        // Separate click-event burst cap so repeated or scripted clicks cannot create unbounded writes.
-        $remote = $this->client_ip();
-        if ($remote) {
-            $bucket = 'bqlv_action_rl_' . substr($this->ip_hash($remote), 0, 32);
-            $hits = (int)get_transient($bucket);
-            if ($hits >= 60) return new WP_REST_Response(['tracked' => false], 429);
-            set_transient($bucket, $hits + 1, MINUTE_IN_SECONDS);
-        }
+        if (!$this->same_site_frontend_request($request)) return new WP_REST_Response(['tracked' => false], 403);
 
         $p = $request->get_json_params();
         $p = is_array($p) ? $p : [];
@@ -350,9 +441,12 @@ final class BQLV_Plugin {
             return new WP_REST_Response(['tracked' => false], 400);
         }
 
-        $origin = (string)($_SERVER['HTTP_ORIGIN'] ?? '');
-        if ($origin && wp_parse_url($origin, PHP_URL_HOST) !== wp_parse_url(home_url(), PHP_URL_HOST)) {
-            return new WP_REST_Response(['tracked' => false], 403);
+        $remote = $this->client_ip();
+        if (!$this->rate_limit_allows('action_session', $sid, 30)) {
+            return new WP_REST_Response(['tracked' => false], 429);
+        }
+        if ($remote && !$this->rate_limit_allows('action_ip', $remote, 600)) {
+            return new WP_REST_Response(['tracked' => false], 429);
         }
 
         $action_url = esc_url_raw((string)($p['action_url'] ?? ''), ['http', 'https']);
@@ -369,18 +463,24 @@ final class BQLV_Plugin {
         $tz = mb_substr(sanitize_text_field($p['timezone'] ?? ''), 0, 128);
         $ua = isset($_SERVER['HTTP_USER_AGENT']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT'])) : '';
         $now = current_time('mysql', true);
-        $ip = $this->client_ip();
+        $stored_ip = $this->should_store_ip() ? $remote : '';
 
         global $wpdb;
         $s = $this->sessions_table();
         $e = $this->events_table();
         $row = $wpdb->get_row($wpdb->prepare(
-            "SELECT id,current_path,visitor_hash FROM $s WHERE session_hash=%s LIMIT 1",
+            'SELECT id,current_path,visitor_hash FROM %i WHERE session_hash=%s LIMIT 1',
+            $s,
             $sh
         ));
 
         if ($row && !hash_equals((string)$row->visitor_hash, $vh)) {
             return new WP_REST_Response(['tracked' => false], 409);
+        }
+
+        $event_count = $row ? $this->session_event_count($sh) : 0;
+        if ($event_count >= 500) {
+            return new WP_REST_Response(['tracked' => false], 429);
         }
 
         if ($row) {
@@ -391,11 +491,10 @@ final class BQLV_Plugin {
                 'browser' => $this->browser($ua),
                 'device' => $this->device($ua),
                 'timezone' => $tz,
-                'ip_address' => $ip,
+                'ip_address' => $stored_ip,
             ], ['id' => (int)$row->id]);
 
-            // If the click arrives before the next heartbeat after navigation, keep the page journey complete.
-            if ((string)$row->current_path !== $path) {
+            if ((string)$row->current_path !== $path && $event_count < 499) {
                 $wpdb->insert($e, [
                     'session_hash' => $sh,
                     'event_type' => 'page',
@@ -403,9 +502,13 @@ final class BQLV_Plugin {
                     'page_title' => $title,
                     'seen_at' => $now,
                 ]);
+                $event_count++;
             }
         } else {
-            // A very fast click can race the initial heartbeat; create the session rather than losing the action.
+            if ($remote && !$this->rate_limit_allows('new_session_ip', $remote, 60)) {
+                return new WP_REST_Response(['tracked' => false], 429);
+            }
+
             $wpdb->insert($s, [
                 'session_hash' => $sh,
                 'visitor_hash' => $vh,
@@ -417,7 +520,7 @@ final class BQLV_Plugin {
                 'browser' => $this->browser($ua),
                 'device' => $this->device($ua),
                 'timezone' => $tz,
-                'ip_address' => $ip,
+                'ip_address' => $stored_ip,
             ]);
             $wpdb->insert($e, [
                 'session_hash' => $sh,
@@ -426,6 +529,11 @@ final class BQLV_Plugin {
                 'page_title' => $title,
                 'seen_at' => $now,
             ]);
+            $event_count = 1;
+        }
+
+        if ($event_count >= 500) {
+            return new WP_REST_Response(['tracked' => false], 429);
         }
 
         $wpdb->insert($e, [
@@ -442,13 +550,11 @@ final class BQLV_Plugin {
     }
 
     /**
-     * GitHub edition: disclosed default-on public publisher credit.
-     * Administrators can disable the credit from Live Visitors > Settings.
-     * No tracking pixels, remote images, or network requests are involved.
-     * Publisher: https://bestquest.net/
+     * Optional public publisher credit.
+     * Disabled by default and displayed only after an administrator opts in.
      */
     public function render_public_credit() {
-        if (is_admin() || is_feed() || is_embed() || wp_doing_ajax() || !get_option(self::OPT_PUBLIC_CREDIT, 1)) return;
+        if (is_admin() || is_feed() || is_embed() || wp_doing_ajax() || !get_option(self::OPT_PUBLIC_CREDIT, 0)) return;
         echo '<div class="bqlv-publisher-credit" style="clear:both;text-align:center;font-size:12px;line-height:1.6;padding:8px 12px;color:inherit;opacity:.72">';
         echo 'Visitor insights powered by <a href="' . esc_url('https://bestquest.net/') . '" rel="nofollow" style="color:inherit;text-decoration:underline">BestQuest</a>';
         echo '</div>';
@@ -473,14 +579,17 @@ final class BQLV_Plugin {
         $heartbeat = (int)get_option(self::OPT_HEARTBEAT, 20);
         $live = (int)get_option(self::OPT_LIVE, 60);
         $retention = (int)get_option(self::OPT_RETENTION, 7);
-        $public_credit = (bool)get_option(self::OPT_PUBLIC_CREDIT, 1);
+        $tracking_enabled = (bool)get_option(self::OPT_TRACKING_ENABLED, 1);
+        $store_ip = (bool)get_option(self::OPT_STORE_IP, 1);
+        $delete_on_uninstall = (bool)get_option(self::OPT_DELETE_ON_UNINSTALL, 1);
+        $public_credit = (bool)get_option(self::OPT_PUBLIC_CREDIT, 0);
         $hashes = get_option(self::OPT_IPS, []);
         $hashes = is_array($hashes) ? $hashes : [];
         $ignored = in_array($this->ip_hash($this->client_ip()), $hashes, true);
         ?>
         <div class="wrap bqlv-wrap">
             <h1>BestQuest Live Visitors</h1>
-            <p class="description">Real-time activity for site administration. Visitor IP addresses are stored locally for the configured retention period and are visible only to administrators.</p>
+            <p class="description">Real-time activity for site administration. IP storage is configurable; when enabled, visitor IP addresses are stored locally for the configured retention period and are visible only to administrators.</p>
 
             <div class="bqlv-cards">
                 <div class="bqlv-card"><strong id="bqlv-live-count">—</strong><span>Live now</span></div>
@@ -539,8 +648,13 @@ final class BQLV_Plugin {
                     <label>Consider visitor live for (seconds)<input type="number" id="bqlv-live-window" min="30" max="300" value="<?php echo esc_attr($live); ?>"></label>
                     <label>Retain session data (days)<input type="number" id="bqlv-retention" min="1" max="30" value="<?php echo esc_attr($retention); ?>"></label>
                 </div>
+                <p><label><input type="checkbox" id="bqlv-tracking-enabled" <?php checked($tracking_enabled); ?>> Enable frontend visitor tracking</label></p>
+                <p><label><input type="checkbox" id="bqlv-store-ip" <?php checked($store_ip); ?>> Store visitor IP addresses</label></p>
+                <p class="description">Turning IP storage off immediately clears IP addresses already stored by this plugin. Hashed visitor/session identifiers and activity history remain until normal retention cleanup.</p>
+                <p><label><input type="checkbox" id="bqlv-delete-on-uninstall" <?php checked($delete_on_uninstall); ?>> Delete BestQuest Live Visitors tables and settings when the plugin is deleted</label></p>
+                <p class="description">Enabled by default. Deactivation still preserves data; deletion from the Plugins screen performs the cleanup.</p>
                 <p><label><input type="checkbox" id="bqlv-public-credit" <?php checked($public_credit); ?>> Show public footer credit linking to BestQuest</label></p>
-                <p class="description">GitHub edition: enabled by default. Displays “Visitor insights powered by BestQuest” on public pages. Uncheck and save to remove it. The credit makes no external requests.</p>
+                <p class="description">Disabled by default. Enable this only if you want to display “Visitor insights powered by BestQuest” on public pages. You can turn it off again at any time.</p>
                 <p>
                     <button class="button button-primary" id="bqlv-save-settings">Save settings</button>
                     <button class="button" id="bqlv-cleanup-now">Clean expired data now</button>
@@ -570,7 +684,8 @@ final class BQLV_Plugin {
         $limit = max(1, min(25, (int)$limit));
         $e = $this->events_table();
         $rows = $wpdb->get_results($wpdb->prepare(
-            "SELECT path,page_title,action_text,action_url,seen_at FROM $e WHERE session_hash=%s AND event_type='click' ORDER BY seen_at DESC,id DESC LIMIT %d",
+            "SELECT path,page_title,action_text,action_url,seen_at FROM %i WHERE session_hash=%s AND event_type='click' ORDER BY seen_at DESC,id DESC LIMIT %d",
+            $e,
             $session_hash,
             $limit
         ));
@@ -597,7 +712,11 @@ final class BQLV_Plugin {
         // Site-local day boundary converted to UTC for stored UTC timestamps.
         $today = (new DateTimeImmutable('today', wp_timezone()))->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
 
-        $rows = $wpdb->get_results($wpdb->prepare("SELECT * FROM $s WHERE last_seen >= %s ORDER BY last_seen DESC LIMIT 200", $cutoff));
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM %i WHERE last_seen >= %s ORDER BY last_seen DESC LIMIT 200",
+            $s,
+            $cutoff
+        ));
         $out = [];
         $seen_visitors = [];
 
@@ -610,7 +729,11 @@ final class BQLV_Plugin {
             }
             $seen_visitors[$row->visitor_hash] = true;
 
-            $jr = $wpdb->get_results($wpdb->prepare("SELECT path,page_title FROM $e WHERE session_hash=%s AND event_type='page' ORDER BY seen_at ASC LIMIT 20", $row->session_hash));
+            $jr = $wpdb->get_results($wpdb->prepare(
+                "SELECT path,page_title FROM %i WHERE session_hash=%s AND event_type='page' ORDER BY seen_at ASC LIMIT 20",
+                $e,
+                $row->session_hash
+            ));
             $journey = [];
             foreach ($jr as $j) $journey[] = ['path' => $j->path, 'title' => $j->page_title];
 
@@ -632,11 +755,13 @@ final class BQLV_Plugin {
 
         $active_15_cutoff = gmdate('Y-m-d H:i:s', time() - (15 * MINUTE_IN_SECONDS));
         $active_15m = (int)$wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(DISTINCT visitor_hash) FROM $s WHERE last_seen >= %s",
+            "SELECT COUNT(DISTINCT visitor_hash) FROM %i WHERE last_seen >= %s",
+            $s,
             $active_15_cutoff
         ));
         $visitors_today = (int)$wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(DISTINCT visitor_hash) FROM $s WHERE last_seen >= %s",
+            "SELECT COUNT(DISTINCT visitor_hash) FROM %i WHERE last_seen >= %s",
+            $s,
             $today
         ));
 
@@ -659,13 +784,17 @@ final class BQLV_Plugin {
         $end = gmdate('Y-m-d H:i:s', time() - $window);
         $start = gmdate('Y-m-d H:i:s', time() - $retention * DAY_IN_SECONDS);
         $rows = $wpdb->get_results($wpdb->prepare(
-            "SELECT session_hash,current_path,page_title,referrer,first_seen,last_seen,browser,device,timezone,ip_address FROM $s WHERE last_seen < %s AND last_seen >= %s ORDER BY last_seen DESC LIMIT 100",
-            $end, $start
+            "SELECT session_hash,current_path,page_title,referrer,first_seen,last_seen,browser,device,timezone,ip_address FROM %i WHERE last_seen < %s AND last_seen >= %s ORDER BY last_seen DESC LIMIT 100",
+            $s,
+            $end,
+            $start
         ));
         $out = [];
         foreach ($rows as $row) {
             $events = $wpdb->get_results($wpdb->prepare(
-                "SELECT path,page_title FROM $e WHERE session_hash=%s AND event_type='page' ORDER BY seen_at ASC LIMIT 30", $row->session_hash
+                "SELECT path,page_title FROM %i WHERE session_hash=%s AND event_type='page' ORDER BY seen_at ASC LIMIT 30",
+                $e,
+                $row->session_hash
             ));
             $journey = [];
             foreach ($events as $event) $journey[] = ['path' => $event->path, 'title' => $event->page_title];
@@ -703,7 +832,8 @@ final class BQLV_Plugin {
 
     public function ajax_remove_ignored_ip() {
         $this->admin_ajax_guard();
-        $i = isset($_POST['index']) ? absint($_POST['index']) : -1;
+        check_ajax_referer('bqlv_admin', 'nonce');
+        $i = isset($_POST['index']) ? absint(wp_unslash($_POST['index'])) : -1;
         $hashes = get_option(self::OPT_IPS, []);
         $hashes = is_array($hashes) ? $hashes : [];
         if (isset($hashes[$i])) {
@@ -713,16 +843,36 @@ final class BQLV_Plugin {
         wp_send_json_success();
     }
 
+    private function clear_stored_ips() {
+        global $wpdb;
+        $s = $this->sessions_table();
+        $wpdb->query($wpdb->prepare("UPDATE %i SET ip_address=''", $s));
+    }
+
     public function ajax_save_settings() {
         $this->admin_ajax_guard();
-        $h = max(10, min(120, absint($_POST['heartbeat'] ?? 20)));
-        $l = max(30, min(300, absint($_POST['live_window'] ?? 60)));
-        $r = max(1, min(30, absint($_POST['retention'] ?? 7)));
-        $credit = isset($_POST['public_credit']) && (string)$_POST['public_credit'] === '1' ? 1 : 0;
+        check_ajax_referer('bqlv_admin', 'nonce');
+        $h = max(10, min(120, absint(wp_unslash($_POST['heartbeat'] ?? 20))));
+        $l = max(30, min(300, absint(wp_unslash($_POST['live_window'] ?? 60))));
+        $r = max(1, min(30, absint(wp_unslash($_POST['retention'] ?? 7))));
+        $tracking = isset($_POST['tracking_enabled']) && (string)wp_unslash($_POST['tracking_enabled']) === '1' ? 1 : 0;
+        $store_ip = isset($_POST['store_ip']) && (string)wp_unslash($_POST['store_ip']) === '1' ? 1 : 0;
+        $delete_on_uninstall = isset($_POST['delete_on_uninstall']) && (string)wp_unslash($_POST['delete_on_uninstall']) === '1' ? 1 : 0;
+        $previous_store_ip = (bool)get_option(self::OPT_STORE_IP, 1);
+
         update_option(self::OPT_HEARTBEAT, $h, false);
         update_option(self::OPT_LIVE, $l, false);
         update_option(self::OPT_RETENTION, $r, false);
+        update_option(self::OPT_TRACKING_ENABLED, $tracking, false);
+        update_option(self::OPT_STORE_IP, $store_ip, false);
+        update_option(self::OPT_DELETE_ON_UNINSTALL, $delete_on_uninstall, false);
+        $credit = isset($_POST['public_credit']) && (string)wp_unslash($_POST['public_credit']) === '1' ? 1 : 0;
         update_option(self::OPT_PUBLIC_CREDIT, $credit, false);
+
+        if ($previous_store_ip && !$store_ip) {
+            $this->clear_stored_ips();
+        }
+
         wp_send_json_success(['message' => 'Settings saved.']);
     }
 
@@ -736,8 +886,10 @@ final class BQLV_Plugin {
         global $wpdb;
         $days = max(1, min(30, (int)get_option(self::OPT_RETENTION, 7)));
         $cutoff = gmdate('Y-m-d H:i:s', time() - $days * DAY_IN_SECONDS);
-        $wpdb->query($wpdb->prepare("DELETE FROM {$this->events_table()} WHERE seen_at < %s", $cutoff));
-        $wpdb->query($wpdb->prepare("DELETE FROM {$this->sessions_table()} WHERE last_seen < %s", $cutoff));
+        $events_table = $this->events_table();
+        $sessions_table = $this->sessions_table();
+        $wpdb->query($wpdb->prepare("DELETE FROM %i WHERE seen_at < %s", $events_table, $cutoff));
+        $wpdb->query($wpdb->prepare("DELETE FROM %i WHERE last_seen < %s", $sessions_table, $cutoff));
     }
 }
 BQLV_Plugin::instance();
